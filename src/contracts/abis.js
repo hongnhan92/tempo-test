@@ -1,12 +1,12 @@
 export const TOKEN_FACTORY_ABI = [
   {
     inputs: [
-      { name: 'name', type: 'string' },
-      { name: 'symbol', type: 'string' },
-      { name: 'currency', type: 'string' },
+      { name: 'name',       type: 'string'  },
+      { name: 'symbol',     type: 'string'  },
+      { name: 'currency',   type: 'string'  },
       { name: 'quoteToken', type: 'address' },
-      { name: 'admin', type: 'address' },
-      { name: 'salt', type: 'bytes32' },
+      { name: 'admin',      type: 'address' },
+      { name: 'salt',       type: 'bytes32' },
     ],
     name: 'createToken',
     outputs: [{ name: 'token', type: 'address' }],
@@ -16,17 +16,44 @@ export const TOKEN_FACTORY_ABI = [
   {
     type: 'event',
     name: 'TokenCreated',
+    anonymous: false,
     inputs: [
       { indexed: true, name: 'token', type: 'address' },
       { indexed: true, name: 'admin', type: 'address' },
-      { indexed: true, name: 'salt', type: 'bytes32' },
+      { indexed: true, name: 'salt',  type: 'bytes32' },
     ],
   },
 ]
 
 export const TOKEN_ABI = [
+  // ── Access Control ──────────────────────────────────────────────
   {
-    inputs: [{ name: 'to', type: 'address' }, { name: 'amount', type: 'uint256' }],
+    inputs: [
+      { name: 'role',    type: 'bytes32' },
+      { name: 'account', type: 'address' },
+    ],
+    name: 'grantRole',
+    outputs: [],
+    stateMutability: 'nonpayable',
+    type: 'function',
+  },
+  {
+    inputs: [
+      { name: 'role',    type: 'bytes32' },
+      { name: 'account', type: 'address' },
+    ],
+    name: 'hasRole',
+    outputs: [{ name: '', type: 'bool' }],
+    stateMutability: 'view',
+    type: 'function',
+  },
+
+  // ── Issuance ─────────────────────────────────────────────────────
+  {
+    inputs: [
+      { name: 'to',     type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
     name: 'mint',
     outputs: [],
     stateMutability: 'nonpayable',
@@ -39,6 +66,8 @@ export const TOKEN_ABI = [
     stateMutability: 'nonpayable',
     type: 'function',
   },
+
+  // ── ERC-20 View ──────────────────────────────────────────────────
   {
     inputs: [],
     name: 'name',
