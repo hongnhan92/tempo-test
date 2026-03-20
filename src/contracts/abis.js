@@ -14,9 +14,7 @@ export const TOKEN_FACTORY_ABI = [
     type: 'function',
   },
   {
-    type: 'event',
-    name: 'TokenCreated',
-    anonymous: false,
+    type: 'event', name: 'TokenCreated', anonymous: false,
     inputs: [
       { indexed: true, name: 'token', type: 'address' },
       { indexed: true, name: 'admin', type: 'address' },
@@ -31,76 +29,157 @@ export const TOKEN_ABI = [
   { inputs: [], name: 'symbol',      outputs: [{ name: '', type: 'string'  }], stateMutability: 'view', type: 'function' },
   { inputs: [], name: 'decimals',    outputs: [{ name: '', type: 'uint8'   }], stateMutability: 'pure', type: 'function' },
   { inputs: [], name: 'totalSupply', outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' },
-  {
-    inputs: [{ name: 'account', type: 'address' }],
-    name: 'balanceOf',
-    outputs: [{ name: '', type: 'uint256' }],
-    stateMutability: 'view',
-    type: 'function',
-  },
+  { inputs: [{ name: 'account', type: 'address' }], name: 'balanceOf', outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' },
   // TIP-20 State
   { inputs: [], name: 'paused',           outputs: [{ name: '', type: 'bool'    }], stateMutability: 'view', type: 'function' },
   { inputs: [], name: 'supplyCap',        outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' },
   { inputs: [], name: 'transferPolicyId', outputs: [{ name: '', type: 'uint64'  }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'quoteToken',       outputs: [{ name: '', type: 'address' }], stateMutability: 'view', type: 'function' },
   // Role view
   { inputs: [], name: 'ISSUER_ROLE',       outputs: [{ name: '', type: 'bytes32' }], stateMutability: 'view', type: 'function' },
   { inputs: [], name: 'PAUSE_ROLE',        outputs: [{ name: '', type: 'bytes32' }], stateMutability: 'view', type: 'function' },
   { inputs: [], name: 'UNPAUSE_ROLE',      outputs: [{ name: '', type: 'bytes32' }], stateMutability: 'view', type: 'function' },
   { inputs: [], name: 'BURN_BLOCKED_ROLE', outputs: [{ name: '', type: 'bytes32' }], stateMutability: 'view', type: 'function' },
-  // hasRole
-  {
-    inputs: [{ name: 'role', type: 'bytes32' }, { name: 'account', type: 'address' }],
-    name: 'hasRole',
-    outputs: [{ name: '', type: 'bool' }],
-    stateMutability: 'view',
-    type: 'function',
-  },
+  { inputs: [{ name: 'role', type: 'bytes32' }, { name: 'account', type: 'address' }], name: 'hasRole', outputs: [{ name: '', type: 'bool' }], stateMutability: 'view', type: 'function' },
   // grantRole / revokeRole
-  {
-    inputs: [{ name: 'role', type: 'bytes32' }, { name: 'account', type: 'address' }],
-    name: 'grantRole',
-    outputs: [],
-    stateMutability: 'nonpayable',
-    type: 'function',
-  },
-  {
-    inputs: [{ name: 'role', type: 'bytes32' }, { name: 'account', type: 'address' }],
-    name: 'revokeRole',
-    outputs: [],
-    stateMutability: 'nonpayable',
-    type: 'function',
-  },
+  { inputs: [{ name: 'role', type: 'bytes32' }, { name: 'account', type: 'address' }], name: 'grantRole', outputs: [], stateMutability: 'nonpayable', type: 'function' },
+  { inputs: [{ name: 'role', type: 'bytes32' }, { name: 'account', type: 'address' }], name: 'revokeRole', outputs: [], stateMutability: 'nonpayable', type: 'function' },
   // Issuance
-  {
-    inputs: [{ name: 'to', type: 'address' }, { name: 'amount', type: 'uint256' }],
-    name: 'mint',
-    outputs: [],
-    stateMutability: 'nonpayable',
-    type: 'function',
-  },
-  {
-    inputs: [{ name: 'amount', type: 'uint256' }],
-    name: 'burn',
-    outputs: [],
-    stateMutability: 'nonpayable',
-    type: 'function',
-  },
+  { inputs: [{ name: 'to', type: 'address' }, { name: 'amount', type: 'uint256' }], name: 'mint', outputs: [], stateMutability: 'nonpayable', type: 'function' },
+  { inputs: [{ name: 'amount', type: 'uint256' }], name: 'burn', outputs: [], stateMutability: 'nonpayable', type: 'function' },
   // Pause
   { inputs: [], name: 'pause',   outputs: [], stateMutability: 'nonpayable', type: 'function' },
   { inputs: [], name: 'unpause', outputs: [], stateMutability: 'nonpayable', type: 'function' },
   // Admin
+  { inputs: [{ name: 'newSupplyCap', type: 'uint256' }], name: 'setSupplyCap', outputs: [], stateMutability: 'nonpayable', type: 'function' },
+  { inputs: [{ name: 'newPolicyId', type: 'uint64' }], name: 'changeTransferPolicyId', outputs: [], stateMutability: 'nonpayable', type: 'function' },
+  // Approve (for DEX)
+  { inputs: [{ name: 'spender', type: 'address' }, { name: 'amount', type: 'uint256' }], name: 'approve', outputs: [{ name: '', type: 'bool' }], stateMutability: 'nonpayable', type: 'function' },
+  { inputs: [{ name: 'owner', type: 'address' }, { name: 'spender', type: 'address' }], name: 'allowance', outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' },
+]
+
+// ── DEX ABI (Stablecoin DEX at 0xdec0...0000) ─────────────────────────────
+export const DEX_ABI = [
+  // ── View / Read ──────────────────────────────────────────────────────────
   {
-    inputs: [{ name: 'newSupplyCap', type: 'uint256' }],
-    name: 'setSupplyCap',
-    outputs: [],
-    stateMutability: 'nonpayable',
-    type: 'function',
+    inputs: [{ name: 'tokenA', type: 'address' }, { name: 'tokenB', type: 'address' }],
+    name: 'pairKey', outputs: [{ name: 'key', type: 'bytes32' }],
+    stateMutability: 'pure', type: 'function',
   },
   {
-    inputs: [{ name: 'newPolicyId', type: 'uint64' }],
-    name: 'changeTransferPolicyId',
-    outputs: [],
-    stateMutability: 'nonpayable',
-    type: 'function',
+    inputs: [{ name: 'pairKey', type: 'bytes32' }],
+    name: 'books',
+    outputs: [
+      { name: 'base',        type: 'address' },
+      { name: 'quote',       type: 'address' },
+      { name: 'bestBidTick', type: 'int16'   },
+      { name: 'bestAskTick', type: 'int16'   },
+    ],
+    stateMutability: 'view', type: 'function',
+  },
+  {
+    inputs: [{ name: 'user', type: 'address' }, { name: 'token', type: 'address' }],
+    name: 'balanceOf', outputs: [{ name: '', type: 'uint128' }],
+    stateMutability: 'view', type: 'function',
+  },
+  {
+    inputs: [{ name: 'tokenIn', type: 'address' }, { name: 'tokenOut', type: 'address' }, { name: 'amountIn', type: 'uint128' }],
+    name: 'quoteSwapExactAmountIn', outputs: [{ name: 'amountOut', type: 'uint128' }],
+    stateMutability: 'view', type: 'function',
+  },
+  {
+    inputs: [],
+    name: 'nextOrderId', outputs: [{ name: '', type: 'uint128' }],
+    stateMutability: 'view', type: 'function',
+  },
+  {
+    inputs: [{ name: 'tick', type: 'int16' }],
+    name: 'tickToPrice', outputs: [{ name: 'price', type: 'uint32' }],
+    stateMutability: 'pure', type: 'function',
+  },
+
+  // ── Write ────────────────────────────────────────────────────────────────
+  {
+    inputs: [{ name: 'base', type: 'address' }],
+    name: 'createPair', outputs: [{ name: 'key', type: 'bytes32' }],
+    stateMutability: 'nonpayable', type: 'function',
+  },
+  {
+    inputs: [
+      { name: 'token',  type: 'address' },
+      { name: 'amount', type: 'uint128' },
+      { name: 'isBid',  type: 'bool'    },
+      { name: 'tick',   type: 'int16'   },
+    ],
+    name: 'place', outputs: [{ name: 'orderId', type: 'uint128' }],
+    stateMutability: 'nonpayable', type: 'function',
+  },
+  {
+    inputs: [
+      { name: 'token',    type: 'address' },
+      { name: 'amount',   type: 'uint128' },
+      { name: 'isBid',    type: 'bool'    },
+      { name: 'tick',     type: 'int16'   },
+      { name: 'flipTick', type: 'int16'   },
+    ],
+    name: 'placeFlip', outputs: [{ name: 'orderId', type: 'uint128' }],
+    stateMutability: 'nonpayable', type: 'function',
+  },
+  {
+    inputs: [{ name: 'orderId', type: 'uint128' }],
+    name: 'cancel', outputs: [],
+    stateMutability: 'nonpayable', type: 'function',
+  },
+  {
+    inputs: [{ name: 'token', type: 'address' }, { name: 'amount', type: 'uint128' }],
+    name: 'withdraw', outputs: [],
+    stateMutability: 'nonpayable', type: 'function',
+  },
+  {
+    inputs: [
+      { name: 'tokenIn',      type: 'address' },
+      { name: 'tokenOut',     type: 'address' },
+      { name: 'amountIn',     type: 'uint128' },
+      { name: 'minAmountOut', type: 'uint128' },
+    ],
+    name: 'swapExactAmountIn', outputs: [{ name: 'amountOut', type: 'uint128' }],
+    stateMutability: 'nonpayable', type: 'function',
+  },
+
+  // ── Events ───────────────────────────────────────────────────────────────
+  {
+    type: 'event', name: 'PairCreated', anonymous: false,
+    inputs: [
+      { indexed: true, name: 'key',   type: 'bytes32' },
+      { indexed: true, name: 'base',  type: 'address' },
+      { indexed: true, name: 'quote', type: 'address' },
+    ],
+  },
+  {
+    type: 'event', name: 'OrderPlaced', anonymous: false,
+    inputs: [
+      { indexed: true,  name: 'orderId',     type: 'uint128' },
+      { indexed: true,  name: 'maker',       type: 'address' },
+      { indexed: true,  name: 'token',       type: 'address' },
+      { indexed: false, name: 'amount',      type: 'uint128' },
+      { indexed: false, name: 'isBid',       type: 'bool'    },
+      { indexed: false, name: 'tick',        type: 'int16'   },
+      { indexed: false, name: 'isFlipOrder', type: 'bool'    },
+      { indexed: false, name: 'flipTick',    type: 'int16'   },
+    ],
+  },
+  {
+    type: 'event', name: 'OrderCancelled', anonymous: false,
+    inputs: [{ indexed: true, name: 'orderId', type: 'uint128' }],
+  },
+  {
+    type: 'event', name: 'OrderFilled', anonymous: false,
+    inputs: [
+      { indexed: true,  name: 'orderId',     type: 'uint128' },
+      { indexed: true,  name: 'maker',       type: 'address' },
+      { indexed: true,  name: 'taker',       type: 'address' },
+      { indexed: false, name: 'amountFilled', type: 'uint128' },
+      { indexed: false, name: 'partialFill', type: 'bool'    },
+    ],
   },
 ]
