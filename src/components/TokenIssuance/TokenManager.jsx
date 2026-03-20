@@ -2,359 +2,430 @@ import React, { useState, useCallback } from 'react'
 import { useAccount, useWalletClient, usePublicClient } from 'wagmi'
 import { TOKEN_ABI } from '../../contracts/abis'
 import { EXPLORER_URL } from '../../config'
-import { parseTokenAmount, formatTokenAmount } from '../../utils/helpers'
+import { parseTokenAmount, formatTokenAmount, ROLES, ROLE_LABELS, parseTxError } from '../../utils/helpers'
 
-// ── Sub-components ──────────────────────────────────────────────────────────
+// ── Shared primitives ────────────────────────────────────────────────────────
 
-function Spinner() {
-  return (
-    <span className="inline-block w-3.5 h-3.5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-  )
+function Spinner({ size = 'sm' }) {
+  const sz = size === 'sm' ? 'w-3.5 h-3.5 border-2' : 'w-4 h-4 border-2'
+  return <span className={`inline-block ${sz} border-blue-500 border-t-transparent rounded-full animate-spin`} />
 }
 
-function TxResult({ tx, explorerUrl }) {
+function TxResult({ tx }) {
   if (!tx) return null
   return (
-    <div className={`mt-2 p-2.5 rounded-lg text-xs ${
-      tx.success
-        ? 'bg-green-50 border border-green-200 text-green-800'
-        : 'bg-red-50 border border-red-200 text-red-700'
-    }`}>
-      {tx.success ? (
-        <span>
-          ✅ Done —{' '}
-          <a
-            href={`${explorerUrl}/tx/${tx.hash}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline font-mono"
-          >
-            {tx.hash.slice(0, 14)}…
-          </a>
-        </span>
-      ) : (
-        <span>❌ {tx.error}</span>
-      )}
+    <div className={`mt-2 p-2.5 rounded-lg text-xs ${tx.success ? 'bg-green-50 border border-green-200 text-green-800' : 'bg-red-50 border border-red-200 text-red-700'}`}>
+      {tx.success
+        ? <span>✅ Done — <a href={`${EXPLORER_URL}/tx/${tx.hash}`} target="_blank" rel="noopener noreferrer" className="underline font-mono">{tx.hash.slice(0,14)}…</a></span>
+        : <span>❌ {tx.error}</span>
+      }
     </div>
   )
 }
 
-function StatBadge({ label, value, sub }) {
+function SectionCard({ title, icon, badge, children, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen)
   return (
-    <div className="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 text-center">
-      <p className="text-xs text-gray-500 mb-1">{label}</p>
-      <p className="text-sm font-bold text-gray-900 break-all">{value}</p>
-      {sub && <p className="text-xs text-gray-400 mt-0.5">{sub}</p>}
+    <div className="border border-gray-200 rounded-xl overflow-hidden">
+      <button type="button" onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-4 py-3 bg-white hover:bg-gray-50 transition-colors">
+        <div className="flex items-center gap-2">
+          <span className="text-base">{icon}</span>
+          <span className="text-sm font-semibold text-gray-800">{title}</span>
+          {badge && <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${badge.color}`}>{badge.text}</span>}
+        </div>
+        <span className="text-gray-400 text-sm">{open ? '▲' : '▼'}</span>
+      </button>
+      {open && <div className="px-4 py-4 bg-white border-t border-gray-100">{children}</div>}
     </div>
   )
 }
 
-// ── Main Component ──────────────────────────────────────────────────────────
+function Field({ label, hint, children }) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-gray-600 mb-1">
+        {label}
+        {hint && <span className="text-gray-400 font-normal ml-1">{hint}</span>}
+      </label>
+      {children}
+    </div>
+  )
+}
 
-export default function TokenManager({ tokenAddress: initialAddress }) {
+function Input({ value, onChange, placeholder, type = 'text', disabled, mono, ...rest }) {
+  return (
+    <input type={type} value={value} onChange={onChange} placeholder={placeholder}
+      disabled={disabled} {...rest}
+      className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-300 disabled:opacity-50
+        ${mono ? 'font-mono' : ''}`} />
+  )
+}
+
+function Btn({ children, onClick, disabled, color = 'blue', loading, type = 'button', wide = true }) {
+  const colors = {
+    blue:  'bg-blue-600 hover:bg-blue-700 text-white',
+    green: 'bg-green-600 hover:bg-green-700 text-white',
+    red:   'bg-red-500   hover:bg-red-600   text-white',
+    amber: 'bg-amber-500 hover:bg-amber-600 text-white',
+    gray:  'bg-gray-200  hover:bg-gray-300  text-gray-800',
+  }
+  return (
+    <button type={type} onClick={onClick} disabled={disabled || loading}
+      className={`${wide ? 'w-full' : 'px-4'} py-2 rounded-lg text-sm font-medium transition-colors
+        ${colors[color]} disabled:opacity-50 disabled:cursor-not-allowed
+        flex items-center justify-center gap-2`}>
+      {loading ? <Spinner /> : null}
+      {children}
+    </button>
+  )
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+
+export default function TokenManager({ tokenAddress: initAddr }) {
   const { address } = useAccount()
   const { data: walletClient } = useWalletClient()
   const publicClient = usePublicClient()
 
-  // ── State ─────────────────────────────────────────────────────────────────
-  const [tokenAddress, setTokenAddress] = useState(initialAddress || '')
-  const [tokenInfo, setTokenInfo]       = useState(null)   // { name, symbol, totalSupply, balance }
+  // ── Token load ───────────────────────────────────────────────────────────
+  const [tokenAddress, setTokenAddress] = useState(initAddr || '')
+  const [tokenInfo, setTokenInfo]       = useState(null)
   const [loadingInfo, setLoadingInfo]   = useState(false)
   const [infoError, setInfoError]       = useState(null)
 
-  const [mintTo,      setMintTo]      = useState(address || '')
-  const [mintAmount,  setMintAmount]  = useState('')
-  const [mintLoading, setMintLoading] = useState(false)
-  const [mintTx,      setMintTx]      = useState(null)
-
-  const [burnAmount,  setBurnAmount]  = useState('')
-  const [burnLoading, setBurnLoading] = useState(false)
-  const [burnTx,      setBurnTx]      = useState(null)
-
-  // ── Load token info ───────────────────────────────────────────────────────
-
   const loadTokenInfo = useCallback(async (addr) => {
-    if (!addr || !addr.startsWith('0x') || addr.length !== 42) {
-      setInfoError('Invalid token address')
-      return
-    }
-    setLoadingInfo(true)
-    setInfoError(null)
-    setTokenInfo(null)
-    setMintTx(null)
-    setBurnTx(null)
-
+    if (!addr || !addr.startsWith('0x') || addr.length !== 42) return setInfoError('Invalid address')
+    setLoadingInfo(true); setInfoError(null); setTokenInfo(null)
     try {
-      const [name, symbol, totalSupply, balance] = await Promise.all([
+      const [name, symbol, totalSupply, balance, paused, supplyCap, transferPolicyId] = await Promise.all([
         publicClient.readContract({ address: addr, abi: TOKEN_ABI, functionName: 'name' }),
         publicClient.readContract({ address: addr, abi: TOKEN_ABI, functionName: 'symbol' }),
         publicClient.readContract({ address: addr, abi: TOKEN_ABI, functionName: 'totalSupply' }),
         publicClient.readContract({ address: addr, abi: TOKEN_ABI, functionName: 'balanceOf', args: [address] }),
+        publicClient.readContract({ address: addr, abi: TOKEN_ABI, functionName: 'paused' }).catch(() => false),
+        publicClient.readContract({ address: addr, abi: TOKEN_ABI, functionName: 'supplyCap' }).catch(() => 0n),
+        publicClient.readContract({ address: addr, abi: TOKEN_ABI, functionName: 'transferPolicyId' }).catch(() => 1n),
       ])
-      setTokenInfo({ name, symbol, totalSupply, balance })
+      setTokenInfo({ name, symbol, totalSupply, balance, paused, supplyCap, transferPolicyId })
     } catch (err) {
       setInfoError('Cannot read token — check address or network')
-      console.error(err)
     } finally {
       setLoadingInfo(false)
     }
   }, [publicClient, address])
 
-  async function refreshInfo() {
-    if (tokenAddress) await loadTokenInfo(tokenAddress)
+  const refresh = useCallback(() => tokenAddress && loadTokenInfo(tokenAddress), [tokenAddress, loadTokenInfo])
+
+  // ── Generic tx runner ────────────────────────────────────────────────────
+  async function runTx(setLoading, setTx, fn) {
+    setLoading(true); setTx(null)
+    try {
+      const hash = await fn()
+      await publicClient.waitForTransactionReceipt({ hash, timeout: 60_000 })
+      setTx({ success: true, hash })
+      await refresh()
+    } catch (err) {
+      setTx({ success: false, error: parseTxError(err) })
+    } finally {
+      setLoading(false)
+    }
   }
 
-  // ── Mint ──────────────────────────────────────────────────────────────────
+  // ── Mint ─────────────────────────────────────────────────────────────────
+  const [mintTo, setMintTo]         = useState('')
+  const [mintAmt, setMintAmt]       = useState('')
+  const [mintLoading, setMintLoad]  = useState(false)
+  const [mintTx, setMintTx]         = useState(null)
 
   async function handleMint(e) {
     e.preventDefault()
-    if (!walletClient || !mintAmount || !mintTo) return
-    setMintLoading(true)
-    setMintTx(null)
-    try {
-      const amount = parseTokenAmount(mintAmount)
-      const hash = await walletClient.writeContract({
-        address: tokenAddress,
-        abi: TOKEN_ABI,
-        functionName: 'mint',
-        args: [mintTo, amount],
-      })
-      await publicClient.waitForTransactionReceipt({ hash, timeout: 60_000 })
-      setMintTx({ success: true, hash })
-      setMintAmount('')
-      await refreshInfo()
-    } catch (err) {
-      let msg = err?.message || 'Unknown error'
-      if (msg.includes('user rejected')) msg = 'Transaction rejected'
-      else if (msg.includes('missing role') || msg.includes('AccessControl')) msg = 'Missing ISSUER_ROLE — grant roles first'
-      setMintTx({ success: false, error: msg })
-    } finally {
-      setMintLoading(false)
-    }
+    await runTx(setMintLoad, setMintTx, () =>
+      walletClient.writeContract({ address: tokenAddress, abi: TOKEN_ABI, functionName: 'mint',
+        args: [mintTo || address, parseTokenAmount(mintAmt)] }))
+    setMintAmt('')
   }
 
-  // ── Burn ──────────────────────────────────────────────────────────────────
+  // ── Burn ─────────────────────────────────────────────────────────────────
+  const [burnAmt, setBurnAmt]       = useState('')
+  const [burnLoading, setBurnLoad]  = useState(false)
+  const [burnTx, setBurnTx]         = useState(null)
 
   async function handleBurn(e) {
     e.preventDefault()
-    if (!walletClient || !burnAmount) return
-    setBurnLoading(false)
-    setBurnTx(null)
-    setBurnLoading(true)
-    try {
-      const amount = parseTokenAmount(burnAmount)
-      const hash = await walletClient.writeContract({
-        address: tokenAddress,
-        abi: TOKEN_ABI,
-        functionName: 'burn',
-        args: [amount],
-      })
-      await publicClient.waitForTransactionReceipt({ hash, timeout: 60_000 })
-      setBurnTx({ success: true, hash })
-      setBurnAmount('')
-      await refreshInfo()
-    } catch (err) {
-      let msg = err?.message || 'Unknown error'
-      if (msg.includes('user rejected'))  msg = 'Transaction rejected'
-      else if (msg.includes('burn amount exceeds balance')) msg = 'Burn amount exceeds your balance'
-      else if (msg.includes('missing role') || msg.includes('AccessControl')) msg = 'Missing BURNER_ROLE — grant roles first'
-      setBurnTx({ success: false, error: msg })
-    } finally {
-      setBurnLoading(false)
-    }
+    await runTx(setBurnLoad, setBurnTx, () =>
+      walletClient.writeContract({ address: tokenAddress, abi: TOKEN_ABI, functionName: 'burn',
+        args: [parseTokenAmount(burnAmt)] }))
+    setBurnAmt('')
   }
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Pause / Unpause ───────────────────────────────────────────────────────
+  const [pauseLoading, setPauseLoad] = useState(false)
+  const [pauseTx, setPauseTx]        = useState(null)
+
+  async function handlePause() {
+    await runTx(setPauseLoad, setPauseTx, () =>
+      walletClient.writeContract({ address: tokenAddress, abi: TOKEN_ABI, functionName: 'pause' }))
+  }
+  async function handleUnpause() {
+    await runTx(setPauseLoad, setPauseTx, () =>
+      walletClient.writeContract({ address: tokenAddress, abi: TOKEN_ABI, functionName: 'unpause' }))
+  }
+
+  // ── Supply Cap ────────────────────────────────────────────────────────────
+  const [capAmt, setCapAmt]         = useState('')
+  const [capLoading, setCapLoad]    = useState(false)
+  const [capTx, setCapTx]           = useState(null)
+
+  async function handleSetCap(e) {
+    e.preventDefault()
+    await runTx(setCapLoad, setCapTx, () =>
+      walletClient.writeContract({ address: tokenAddress, abi: TOKEN_ABI, functionName: 'setSupplyCap',
+        args: [parseTokenAmount(capAmt)] }))
+    setCapAmt('')
+  }
+
+  // ── Grant / Revoke Role ───────────────────────────────────────────────────
+  const [roleTarget, setRoleTarget] = useState('')
+  const [roleKey, setRoleKey]       = useState('ISSUER_ROLE')
+  const [grantLoading, setGrantLoad]= useState(false)
+  const [grantTx, setGrantTx]       = useState(null)
+  const [revokeLoading, setRevokeLoad]= useState(false)
+  const [revokeTx, setRevokeTx]     = useState(null)
+
+  async function handleGrant() {
+    await runTx(setGrantLoad, setGrantTx, () =>
+      walletClient.writeContract({ address: tokenAddress, abi: TOKEN_ABI, functionName: 'grantRole',
+        args: [ROLES[roleKey], roleTarget || address] }))
+  }
+  async function handleRevoke() {
+    await runTx(setRevokeLoad, setRevokeTx, () =>
+      walletClient.writeContract({ address: tokenAddress, abi: TOKEN_ABI, functionName: 'revokeRole',
+        args: [ROLES[roleKey], roleTarget || address] }))
+  }
+
+  // ── Transfer Policy ───────────────────────────────────────────────────────
+  const [policyId, setPolicyId]     = useState('')
+  const [policyLoading, setPolicyLoad]= useState(false)
+  const [policyTx, setPolicyTx]     = useState(null)
+
+  async function handlePolicy(e) {
+    e.preventDefault()
+    await runTx(setPolicyLoad, setPolicyTx, () =>
+      walletClient.writeContract({ address: tokenAddress, abi: TOKEN_ABI, functionName: 'changeTransferPolicyId',
+        args: [BigInt(policyId)] }))
+    setPolicyId('')
+  }
 
   const isReady = !!tokenInfo
 
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className="card">
+    <div className="card space-y-4">
 
-      {/* ── Header ── */}
-      <div className="flex items-center justify-between mb-5">
-        <h2 className="text-xl font-bold">Token Manager</h2>
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-bold">Manage Token</h2>
         {isReady && (
-          <button
-            onClick={refreshInfo}
-            disabled={loadingInfo}
-            className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1 disabled:opacity-50"
-          >
+          <button onClick={refresh} disabled={loadingInfo}
+            className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1 disabled:opacity-50">
             {loadingInfo ? <Spinner /> : '↻'} Refresh
           </button>
         )}
       </div>
 
-      {/* ── Token address input ── */}
-      <div className="mb-4">
+      {/* Token address input */}
+      <div>
         <label className="block text-xs font-medium text-gray-600 mb-1">Token Address</label>
         <div className="flex gap-2">
-          <input
-            type="text"
-            value={tokenAddress}
-            onChange={e => {
-              setTokenAddress(e.target.value)
-              setTokenInfo(null)
-              setInfoError(null)
-            }}
-            placeholder="0x…"
-            className="flex-1 px-3 py-2 border rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-300"
-          />
-          <button
-            onClick={() => loadTokenInfo(tokenAddress)}
-            disabled={loadingInfo || !tokenAddress}
-            className="btn btn-primary px-4 disabled:opacity-50"
-          >
-            {loadingInfo ? <Spinner /> : 'Load'}
-          </button>
+          <Input value={tokenAddress} onChange={e => { setTokenAddress(e.target.value); setTokenInfo(null); setInfoError(null) }}
+            placeholder="0x…" mono />
+          <Btn onClick={() => loadTokenInfo(tokenAddress)} disabled={!tokenAddress} loading={loadingInfo} wide={false}>
+            Load
+          </Btn>
         </div>
-        {infoError && (
-          <p className="text-xs text-red-600 mt-1">{infoError}</p>
-        )}
+        {infoError && <p className="text-xs text-red-600 mt-1">{infoError}</p>}
       </div>
 
-      {/* ── Token stats ── */}
+      {/* Token stats */}
       {isReady && (
-        <>
-          <div className="grid grid-cols-2 gap-3 mb-5">
-            <StatBadge
-              label="Token"
-              value={tokenInfo.symbol}
-              sub={tokenInfo.name}
-            />
-            <StatBadge
-              label="Total Supply"
-              value={formatTokenAmount(tokenInfo.totalSupply)}
-              sub="(6 decimals)"
-            />
-            <StatBadge
-              label="Your Balance"
-              value={formatTokenAmount(tokenInfo.balance)}
-              sub={tokenInfo.symbol}
-            />
-            <StatBadge
-              label="Explorer"
-              value={
-                <a
-                  href={`${EXPLORER_URL}/token/${tokenAddress}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-600 hover:underline text-xs font-mono"
-                >
-                  {tokenAddress.slice(0, 10)}…
-                </a>
-              }
-            />
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 p-3 bg-gray-50 rounded-xl border border-gray-200">
+          {[
+            { label: 'Name',         value: tokenInfo.name },
+            { label: 'Symbol',       value: tokenInfo.symbol },
+            { label: 'Total Supply', value: formatTokenAmount(tokenInfo.totalSupply) },
+            { label: 'Your Balance', value: `${formatTokenAmount(tokenInfo.balance)} ${tokenInfo.symbol}` },
+            { label: 'Supply Cap',   value: tokenInfo.supplyCap > 0n ? formatTokenAmount(tokenInfo.supplyCap) : 'Unlimited' },
+            { label: 'Policy ID',    value: `#${tokenInfo.transferPolicyId.toString()}` },
+          ].map(({ label, value }) => (
+            <div key={label} className="text-center py-2">
+              <p className="text-xs text-gray-500">{label}</p>
+              <p className="text-sm font-bold text-gray-900 truncate">{value}</p>
+            </div>
+          ))}
+          <div className="col-span-2 sm:col-span-3 text-center pt-1">
+            <span className={`text-xs px-3 py-1 rounded-full font-medium ${tokenInfo.paused ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+              {tokenInfo.paused ? '⏸ PAUSED' : '▶ ACTIVE'}
+            </span>
           </div>
-
-          <hr className="border-gray-100 mb-5" />
-
-          {/* ── Mint ── */}
-          <div className="mb-5">
-            <h3 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-1.5">
-              <span className="text-green-500">⬆</span> Mint Tokens
-              <span className="text-xs font-normal text-gray-400">(requires ISSUER_ROLE)</span>
-            </h3>
-            <form onSubmit={handleMint} className="space-y-2">
-              <div>
-                <label className="block text-xs font-medium text-gray-500 mb-1">Recipient Address</label>
-                <input
-                  type="text"
-                  value={mintTo}
-                  onChange={e => setMintTo(e.target.value)}
-                  placeholder="0x…  (default: your wallet)"
-                  className="w-full px-3 py-2 border rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-green-300"
-                  disabled={mintLoading}
-                />
-                <button
-                  type="button"
-                  onClick={() => setMintTo(address)}
-                  className="text-xs text-blue-500 hover:underline mt-0.5"
-                >
-                  Use my wallet
-                </button>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-500 mb-1">Amount (6 decimals)</label>
-                <input
-                  type="number"
-                  value={mintAmount}
-                  onChange={e => setMintAmount(e.target.value)}
-                  placeholder="e.g. 1000000"
-                  className="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-300"
-                  min="0"
-                  disabled={mintLoading}
-                  required
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={mintLoading || !mintAmount}
-                className="w-full py-2 rounded-lg text-sm font-medium bg-green-600 text-white hover:bg-green-700
-                  disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
-              >
-                {mintLoading ? <><Spinner /> Minting…</> : '⬆ Mint'}
-              </button>
-            </form>
-            <TxResult tx={mintTx} explorerUrl={EXPLORER_URL} />
-          </div>
-
-          <hr className="border-gray-100 mb-5" />
-
-          {/* ── Burn ── */}
-          <div>
-            <h3 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-1.5">
-              <span className="text-red-400">⬇</span> Burn Tokens
-              <span className="text-xs font-normal text-gray-400">(requires BURNER_ROLE)</span>
-            </h3>
-            <form onSubmit={handleBurn} className="space-y-2">
-              <div>
-                <label className="block text-xs font-medium text-gray-500 mb-1">
-                  Amount to burn
-                  <span className="text-gray-400 font-normal ml-1">
-                    (your balance: {formatTokenAmount(tokenInfo.balance)} {tokenInfo.symbol})
-                  </span>
-                </label>
-                <input
-                  type="number"
-                  value={burnAmount}
-                  onChange={e => setBurnAmount(e.target.value)}
-                  placeholder="e.g. 10000"
-                  className="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-300"
-                  min="0"
-                  max={formatTokenAmount(tokenInfo.balance)}
-                  disabled={burnLoading}
-                  required
-                />
-                <button
-                  type="button"
-                  onClick={() => setBurnAmount(formatTokenAmount(tokenInfo.balance))}
-                  className="text-xs text-blue-500 hover:underline mt-0.5"
-                >
-                  Burn all
-                </button>
-              </div>
-              <button
-                type="submit"
-                disabled={burnLoading || !burnAmount}
-                className="w-full py-2 rounded-lg text-sm font-medium bg-red-500 text-white hover:bg-red-600
-                  disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
-              >
-                {burnLoading ? <><Spinner /> Burning…</> : '⬇ Burn'}
-              </button>
-            </form>
-            <TxResult tx={burnTx} explorerUrl={EXPLORER_URL} />
-          </div>
-        </>
-      )}
-
-      {/* ── Empty state ── */}
-      {!isReady && !loadingInfo && !infoError && (
-        <div className="text-center py-8 text-gray-400 text-sm">
-          Enter a token address and click <strong>Load</strong> to manage it
         </div>
       )}
 
+      {!isReady && !loadingInfo && !infoError && (
+        <div className="text-center py-8 text-gray-400 text-sm">
+          Enter a token address above and click <strong>Load</strong>
+        </div>
+      )}
+
+      {/* ── Sections ────────────────────────────────────────────────────── */}
+      {isReady && (
+        <div className="space-y-2">
+
+          {/* MINT */}
+          <SectionCard title="Mint Tokens" icon="⬆" defaultOpen
+            badge={{ text: 'ISSUER_ROLE', color: 'bg-blue-100 text-blue-700' }}>
+            <form onSubmit={handleMint} className="space-y-3">
+              <Field label="Recipient" hint="(leave empty = your wallet)">
+                <Input value={mintTo} onChange={e => setMintTo(e.target.value)}
+                  placeholder={address} disabled={mintLoading} mono />
+              </Field>
+              <Field label="Amount" hint="(6 decimals)">
+                <Input type="number" value={mintAmt} onChange={e => setMintAmt(e.target.value)}
+                  placeholder="1000000" min="0" disabled={mintLoading} required />
+              </Field>
+              <Btn type="submit" color="green" loading={mintLoading} disabled={!mintAmt}>
+                ⬆ Mint
+              </Btn>
+            </form>
+            <TxResult tx={mintTx} />
+          </SectionCard>
+
+          {/* BURN */}
+          <SectionCard title="Burn Tokens" icon="⬇"
+            badge={{ text: 'ISSUER_ROLE', color: 'bg-orange-100 text-orange-700' }}>
+            <form onSubmit={handleBurn} className="space-y-3">
+              <Field label="Amount to burn" hint={`(balance: ${formatTokenAmount(tokenInfo.balance)} ${tokenInfo.symbol})`}>
+                <Input type="number" value={burnAmt} onChange={e => setBurnAmt(e.target.value)}
+                  placeholder="10000" min="0" disabled={burnLoading} required />
+                <button type="button" onClick={() => setBurnAmt(formatTokenAmount(tokenInfo.balance))}
+                  className="text-xs text-blue-500 hover:underline mt-0.5">Burn all</button>
+              </Field>
+              <Btn type="submit" color="red" loading={burnLoading} disabled={!burnAmt}>
+                ⬇ Burn
+              </Btn>
+            </form>
+            <TxResult tx={burnTx} />
+          </SectionCard>
+
+          {/* PAUSE / UNPAUSE */}
+          <SectionCard title="Pause / Unpause" icon="⏸"
+            badge={tokenInfo.paused
+              ? { text: 'PAUSED', color: 'bg-red-100 text-red-700' }
+              : { text: 'ACTIVE', color: 'bg-green-100 text-green-700' }}>
+            <div className="space-y-3">
+              <p className="text-xs text-gray-500">
+                {tokenInfo.paused
+                  ? 'Token transfers are currently paused. Unpause to resume all transfers.'
+                  : 'Token transfers are active. Pause to halt all transfers immediately.'}
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                <Btn color="amber" loading={pauseLoading} disabled={tokenInfo.paused} onClick={handlePause}>
+                  ⏸ Pause
+                </Btn>
+                <Btn color="green" loading={pauseLoading} disabled={!tokenInfo.paused} onClick={handleUnpause}>
+                  ▶ Unpause
+                </Btn>
+              </div>
+              <p className="text-xs text-gray-400">Pause requires PAUSE_ROLE · Unpause requires UNPAUSE_ROLE</p>
+            </div>
+            <TxResult tx={pauseTx} />
+          </SectionCard>
+
+          {/* SUPPLY CAP */}
+          <SectionCard title="Supply Cap" icon="🔒"
+            badge={{ text: 'DEFAULT_ADMIN', color: 'bg-purple-100 text-purple-700' }}>
+            <form onSubmit={handleSetCap} className="space-y-3">
+              <p className="text-xs text-gray-500">
+                Current cap: <strong>{tokenInfo.supplyCap > 0n ? formatTokenAmount(tokenInfo.supplyCap) : 'Unlimited'}</strong>
+                {' '}· Current supply: <strong>{formatTokenAmount(tokenInfo.totalSupply)}</strong>
+              </p>
+              <Field label="New supply cap" hint="(must be ≥ current supply, 0 = unlimited)">
+                <Input type="number" value={capAmt} onChange={e => setCapAmt(e.target.value)}
+                  placeholder="e.g. 10000000" min="0" disabled={capLoading} required />
+              </Field>
+              <Btn type="submit" color="blue" loading={capLoading} disabled={!capAmt}>
+                🔒 Set Supply Cap
+              </Btn>
+            </form>
+            <TxResult tx={capTx} />
+          </SectionCard>
+
+          {/* ROLES */}
+          <SectionCard title="Role Management" icon="🔑">
+            <div className="space-y-3">
+              <Field label="Role">
+                <select value={roleKey} onChange={e => setRoleKey(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-300">
+                  {Object.keys(ROLES).map(k => (
+                    <option key={k} value={k}>{k}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Address" hint="(leave empty = your wallet)">
+                <Input value={roleTarget} onChange={e => setRoleTarget(e.target.value)}
+                  placeholder={address} mono />
+              </Field>
+              <div className="grid grid-cols-2 gap-2">
+                <Btn color="blue" loading={grantLoading} onClick={handleGrant}>
+                  ✓ Grant Role
+                </Btn>
+                <Btn color="red" loading={revokeLoading} onClick={handleRevoke}>
+                  ✗ Revoke Role
+                </Btn>
+              </div>
+              <p className="text-xs text-gray-400">
+                Requires DEFAULT_ADMIN_ROLE · Only the token admin can grant/revoke roles
+              </p>
+            </div>
+            {grantTx && <TxResult tx={grantTx} />}
+            {revokeTx && <TxResult tx={revokeTx} />}
+          </SectionCard>
+
+          {/* TRANSFER POLICY */}
+          <SectionCard title="Transfer Policy" icon="📋"
+            badge={{ text: 'DEFAULT_ADMIN', color: 'bg-purple-100 text-purple-700' }}>
+            <form onSubmit={handlePolicy} className="space-y-3">
+              <div className="text-xs text-gray-600 space-y-1 p-3 bg-gray-50 rounded-lg">
+                <p className="font-medium">Built-in policy IDs:</p>
+                <p>ID <strong>0</strong> — Always reject (freeze all transfers)</p>
+                <p>ID <strong>1</strong> — Always allow (default, no restrictions)</p>
+                <p>ID <strong>≥2</strong> — Custom policy from TIP-403 Registry</p>
+                <p className="text-gray-400 mt-1">Current: Policy #{tokenInfo.transferPolicyId.toString()}</p>
+              </div>
+              <Field label="New Policy ID">
+                <Input type="number" value={policyId} onChange={e => setPolicyId(e.target.value)}
+                  placeholder="0 = freeze, 1 = allow, ≥2 = custom" min="0" disabled={policyLoading} required />
+              </Field>
+              <div className="grid grid-cols-2 gap-2">
+                <Btn type="button" color="red" loading={policyLoading} onClick={() => { setPolicyId('0'); }}
+                  disabled={policyLoading} wide>
+                  🔴 Freeze (ID 0)
+                </Btn>
+                <Btn type="button" color="green" loading={policyLoading}
+                  onClick={() => { setPolicyId('1'); }}
+                  disabled={policyLoading} wide>
+                  🟢 Allow (ID 1)
+                </Btn>
+              </div>
+              <Btn type="submit" color="blue" loading={policyLoading} disabled={policyId === ''}>
+                📋 Apply Policy
+              </Btn>
+            </form>
+            <TxResult tx={policyTx} />
+          </SectionCard>
+
+        </div>
+      )}
     </div>
   )
 }

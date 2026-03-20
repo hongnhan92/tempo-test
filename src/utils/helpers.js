@@ -1,9 +1,7 @@
 import { formatUnits, parseUnits, keccak256, toHex } from 'viem'
 
-// ── Token helpers ───────────────────────────────────────────────────────────
-
 export function formatTokenAmount(amount, decimals = 6) {
-  if (!amount) return '0'
+  if (amount === undefined || amount === null) return '0'
   return formatUnits(amount, decimals)
 }
 
@@ -15,7 +13,6 @@ export function parseTokenAmount(amount, decimals = 6) {
 export function generateSalt(address) {
   const timestamp = Date.now()
   const random    = Math.floor(Math.random() * 1_000_000)
-  // Mirror automation.js pattern (no walletIndex in single-wallet dApp context)
   return keccak256(toHex(`${address}-${timestamp}-${random}`))
 }
 
@@ -24,24 +21,50 @@ export function truncateAddress(address, start = 6, end = 4) {
   return `${address.slice(0, start)}...${address.slice(-end)}`
 }
 
-export function getExplorerTxUrl(txHash, baseUrl = 'https://explore.moderato.tempo.xyz') {
-  return `${baseUrl}/tx/${txHash}`
+export function getExplorerTxUrl(txHash, base = 'https://explore.testnet.tempo.xyz') {
+  return `${base}/tx/${txHash}`
 }
 
-export function getExplorerTokenUrl(tokenAddress, baseUrl = 'https://explore.moderato.tempo.xyz') {
-  return `${baseUrl}/token/${tokenAddress}`
+export function getExplorerTokenUrl(addr, base = 'https://explore.testnet.tempo.xyz') {
+  return `${base}/token/${addr}`
 }
 
 export function copyToClipboard(text) {
   return navigator.clipboard.writeText(text)
 }
 
-// ── Role constants — must match token implementation (keccak256 of name) ────
-// Same derivation as automation.js:  keccak256(toHex('ROLE_NAME'))
+// ── Role constants ─────────────────────────────────────────────────────────
+// From TIP-20 spec: keccak256("ROLE_NAME") — matches automation.js
 
 export const ROLES = {
-  ISSUER_ROLE:     keccak256(toHex('ISSUER_ROLE')),
-  BURNER_ROLE:     keccak256(toHex('BURNER_ROLE')),
-  PAUSER_ROLE:     keccak256(toHex('PAUSER_ROLE')),
-  COMPLIANCE_ROLE: keccak256(toHex('COMPLIANCE_ROLE')),
+  // DEFAULT_ADMIN_ROLE is bytes32(0) in OpenZeppelin AccessControl
+  DEFAULT_ADMIN_ROLE: '0x0000000000000000000000000000000000000000000000000000000000000000',
+  ISSUER_ROLE:        keccak256(toHex('ISSUER_ROLE')),
+  PAUSE_ROLE:         keccak256(toHex('PAUSE_ROLE')),
+  UNPAUSE_ROLE:       keccak256(toHex('UNPAUSE_ROLE')),
+  BURN_BLOCKED_ROLE:  keccak256(toHex('BURN_BLOCKED_ROLE')),
+}
+
+export const ROLE_LABELS = {
+  [ROLES.DEFAULT_ADMIN_ROLE]: 'DEFAULT_ADMIN',
+  [ROLES.ISSUER_ROLE]:        'ISSUER',
+  [ROLES.PAUSE_ROLE]:         'PAUSE',
+  [ROLES.UNPAUSE_ROLE]:       'UNPAUSE',
+  [ROLES.BURN_BLOCKED_ROLE]:  'BURN_BLOCKED',
+}
+
+// Human-friendly error parser for TIP-20 errors
+export function parseTxError(err) {
+  const msg = err?.message || 'Unknown error'
+  if (msg.includes('user rejected') || msg.includes('User denied')) return 'Transaction rejected'
+  if (msg.includes('Unauthorized') || msg.includes('missing role') || msg.includes('AccessControl'))
+    return 'Missing required role for this action'
+  if (msg.includes('insufficient funds')) return 'Not enough USD for gas — get funds at faucet.tempo.xyz'
+  if (msg.includes('burn amount exceeds') || msg.includes('InsufficientBalance')) return 'Amount exceeds balance'
+  if (msg.includes('ContractPaused')) return 'Token is currently paused'
+  if (msg.includes('SupplyCapExceeded')) return 'Mint would exceed supply cap'
+  if (msg.includes('InvalidSupplyCap')) return 'Supply cap cannot be lower than current supply'
+  if (msg.includes('PolicyForbids')) return 'Transfer policy forbids this operation'
+  if (msg.includes('InvalidTransferPolicyId')) return 'Invalid transfer policy ID'
+  return msg.slice(0, 120)
 }
