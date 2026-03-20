@@ -137,16 +137,40 @@ export default function CreateToken({ onTokenCreated }) {
   }
 
   // ── Extract token address from receipt logs ───────────────────────────────
+  // Mirror automation.js: filter by factory address first, then decode.
+  // Without this filter, a Transfer(from=0x0,...) log from ERC-20 minting
+  // has topics[1] = zero address → wrong address returned.
+
+  const ZERO_ADDR = '0x0000000000000000000000000000000000000000'
 
   function extractTokenAddress(receipt) {
+    const factoryLower = CONTRACTS.tokenFactory.toLowerCase()
+
     for (const log of receipt.logs) {
+      // ① Only look at logs emitted BY the factory contract
+      if (!log.address || log.address.toLowerCase() !== factoryLower) continue
+
+      // ② ABI-decode TokenCreated (preferred — all fields are indexed in topics)
       try {
-        const decoded = decodeEventLog({ abi: TOKEN_FACTORY_ABI, data: log.data, topics: log.topics })
-        if (decoded.eventName === 'TokenCreated' && decoded.args?.token) return decoded.args.token
+        const decoded = decodeEventLog({
+          abi: TOKEN_FACTORY_ABI,
+          data: log.data,
+          topics: log.topics,
+        })
+        if (decoded.eventName === 'TokenCreated' && decoded.args?.token) {
+          const addr = decoded.args.token
+          if (addr && addr.toLowerCase() !== ZERO_ADDR) return addr
+        }
       } catch {}
-      // Fallback: last 20 bytes of topics[1]
-      if (log.topics?.length >= 2 && typeof log.topics[1] === 'string' && log.topics[1].length === 66) {
-        return `0x${log.topics[1].slice(-40)}`
+
+      // ③ Fallback: extract last 20 bytes of topics[1]
+      if (
+        log.topics?.length >= 2 &&
+        typeof log.topics[1] === 'string' &&
+        log.topics[1].length === 66
+      ) {
+        const addr = `0x${log.topics[1].slice(-40)}`
+        if (addr.toLowerCase() !== ZERO_ADDR) return addr
       }
     }
     return null
@@ -237,7 +261,9 @@ export default function CreateToken({ onTokenCreated }) {
 
       const createReceipt = await waitTx(createHash)
       const tokenAddress  = extractTokenAddress(createReceipt)
-      if (!tokenAddress) throw new Error('Token address not found in receipt logs')
+      if (!tokenAddress || tokenAddress.toLowerCase() === '0x0000000000000000000000000000000000000000') {
+        throw new Error('Token address not found in receipt logs — check factory address in config')
+      }
 
       setStep('createToken', S.DONE, createHash)
 
