@@ -105,12 +105,17 @@ export default function CreateToken({ onTokenCreated }) {
   })
 
   const [loading,      setLoading]      = useState(false)
-  const [stepStatuses, setStepStatuses] = useState({})  // { stepId: S.* }
-  const [stepTxHashes, setStepTxHashes] = useState({})  // { stepId: txHash }
+  // activeMode tracks the mode actually being executed (may differ from form.batchMode after fallback)
+  const [activeMode,   setActiveMode]   = useState(null)   // 'batch' | 'sequential' | null
+  const [fallbackMsg,  setFallbackMsg]  = useState(null)   // shown when batch → seq fallback occurs
+  const [stepStatuses, setStepStatuses] = useState({})
+  const [stepTxHashes, setStepTxHashes] = useState({})
   const [result,       setResult]       = useState(null)
   const [errorMsg,     setErrorMsg]     = useState(null)
 
-  const steps = form.batchMode ? BATCH_STEPS : SEQ_STEPS
+  const displaySteps = activeMode === 'batch' ? BATCH_STEPS
+                     : activeMode === 'sequential' ? SEQ_STEPS
+                     : form.batchMode ? BATCH_STEPS : SEQ_STEPS
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -135,18 +140,68 @@ export default function CreateToken({ onTokenCreated }) {
 
   function extractTokenAddress(receipt) {
     for (const log of receipt.logs) {
-      // 1) ABI-decode (preferred)
       try {
         const decoded = decodeEventLog({ abi: TOKEN_FACTORY_ABI, data: log.data, topics: log.topics })
         if (decoded.eventName === 'TokenCreated' && decoded.args?.token) return decoded.args.token
       } catch {}
-
-      // 2) Fallback: last 20 bytes of topics[1]
+      // Fallback: last 20 bytes of topics[1]
       if (log.topics?.length >= 2 && typeof log.topics[1] === 'string' && log.topics[1].length === 66) {
         return `0x${log.topics[1].slice(-40)}`
       }
     }
     return null
+  }
+
+  // ── Sequential execution (shared by fallback + explicit sequential) ────────
+
+  async function runSequential(walletClient, tokenAddress, createHash, mintAmountParsed, burnAmountParsed) {
+    // Reset step panel to sequential steps, keep createToken done
+    setActiveMode('sequential')
+    setStepStatuses({
+      createToken:     S.DONE,
+      grantIssuer:     S.PENDING,
+      grantBurner:     S.PENDING,
+      grantPauser:     S.PENDING,
+      grantCompliance: S.PENDING,
+      mint:            S.PENDING,
+      burn:            S.PENDING,
+    })
+    setStepTxHashes(prev => ({ createToken: prev.createToken }))
+
+    const roleSteps = [
+      { id: 'grantIssuer',     role: ROLES.ISSUER_ROLE     },
+      { id: 'grantBurner',     role: ROLES.BURNER_ROLE     },
+      { id: 'grantPauser',     role: ROLES.PAUSER_ROLE     },
+      { id: 'grantCompliance', role: ROLES.COMPLIANCE_ROLE },
+    ]
+
+    for (const { id, role } of roleSteps) {
+      setStep(id, S.RUNNING)
+      const h = await walletClient.writeContract({
+        address: tokenAddress, abi: TOKEN_ABI,
+        functionName: 'grantRole', args: [role, address],
+      })
+      await waitTx(h)
+      setStep(id, S.DONE, h)
+    }
+
+    setStep('mint', S.RUNNING)
+    const mintHash = await walletClient.writeContract({
+      address: tokenAddress, abi: TOKEN_ABI,
+      functionName: 'mint', args: [address, mintAmountParsed],
+    })
+    await waitTx(mintHash)
+    setStep('mint', S.DONE, mintHash)
+
+    setStep('burn', S.RUNNING)
+    const burnHash = await walletClient.writeContract({
+      address: tokenAddress, abi: TOKEN_ABI,
+      functionName: 'burn', args: [burnAmountParsed],
+    })
+    await waitTx(burnHash)
+    setStep('burn', S.DONE, burnHash)
+
+    return { tokenAddress, createHash, mode: 'sequential' }
   }
 
   // ── Submit ────────────────────────────────────────────────────────────────
@@ -160,12 +215,16 @@ export default function CreateToken({ onTokenCreated }) {
 
     setLoading(true)
     setErrorMsg(null)
+    setFallbackMsg(null)
     setResult(null)
-    setStepStatuses(Object.fromEntries(steps.map(s => [s.id, S.PENDING])))
+    setActiveMode(form.batchMode ? 'batch' : 'sequential')
+    setStepStatuses(Object.fromEntries(
+      (form.batchMode ? BATCH_STEPS : SEQ_STEPS).map(s => [s.id, S.PENDING])
+    ))
     setStepTxHashes({})
 
     try {
-      // ── Step 1: createToken ───────────────────────────────────────────────
+      // ── Step 1: createToken (same for both modes) ─────────────────────────
       setStep('createToken', S.RUNNING)
 
       const salt = generateSalt(address)
@@ -185,7 +244,7 @@ export default function CreateToken({ onTokenCreated }) {
       const mintAmountParsed = parseTokenAmount(form.mintAmount)
       const burnAmountParsed = parseTokenAmount(form.burnAmount)
 
-      // ── BATCH MODE ────────────────────────────────────────────────────────
+      // ── BATCH MODE (with auto-fallback) ───────────────────────────────────
       if (form.batchMode) {
         setStep('batchOps', S.RUNNING)
 
@@ -195,63 +254,43 @@ export default function CreateToken({ onTokenCreated }) {
             data: encodeFunctionData({ abi: TOKEN_ABI, functionName: 'grantRole', args: [role, address] }),
           }))
 
-        const batchHash = await walletClient.sendTransaction({
-          calls: [
-            ...roleCalls,
-            {
-              to:   tokenAddress,
-              data: encodeFunctionData({ abi: TOKEN_ABI, functionName: 'mint', args: [address, mintAmountParsed] }),
-            },
-            {
-              to:   tokenAddress,
-              data: encodeFunctionData({ abi: TOKEN_ABI, functionName: 'burn', args: [burnAmountParsed] }),
-            },
-          ],
-        })
-
-        await waitTx(batchHash)
-        setStep('batchOps', S.DONE, batchHash)
-
-        setResult({ tokenAddress, createHash, batchHash, mode: 'batch' })
-
-      // ── SEQUENTIAL MODE ───────────────────────────────────────────────────
-      } else {
-        const roleSteps = [
-          { id: 'grantIssuer',     role: ROLES.ISSUER_ROLE     },
-          { id: 'grantBurner',     role: ROLES.BURNER_ROLE     },
-          { id: 'grantPauser',     role: ROLES.PAUSER_ROLE     },
-          { id: 'grantCompliance', role: ROLES.COMPLIANCE_ROLE },
-        ]
-
-        for (const { id, role } of roleSteps) {
-          setStep(id, S.RUNNING)
-          const h = await walletClient.writeContract({
-            address: tokenAddress, abi: TOKEN_ABI,
-            functionName: 'grantRole', args: [role, address],
+        try {
+          const batchHash = await walletClient.sendTransaction({
+            calls: [
+              ...roleCalls,
+              {
+                to:   tokenAddress,
+                data: encodeFunctionData({ abi: TOKEN_ABI, functionName: 'mint', args: [address, mintAmountParsed] }),
+              },
+              {
+                to:   tokenAddress,
+                data: encodeFunctionData({ abi: TOKEN_ABI, functionName: 'burn', args: [burnAmountParsed] }),
+              },
+            ],
           })
-          await waitTx(h)
-          setStep(id, S.DONE, h)
+
+          await waitTx(batchHash)
+          setStep('batchOps', S.DONE, batchHash)
+          const r = { tokenAddress, createHash, batchHash, mode: 'batch' }
+          setResult(r)
+          if (onTokenCreated) onTokenCreated(tokenAddress)
+          return
+
+        } catch (batchErr) {
+          // ── Auto-fallback: batch unsupported → sequential ─────────────────
+          console.warn('⚡ Batch mode failed, falling back to sequential:', batchErr?.message)
+          setStep('batchOps', S.ERROR)
+          setFallbackMsg('⚡ Batch mode not supported by wallet/RPC — switched to sequential automatically')
+          const r = await runSequential(walletClient, tokenAddress, createHash, mintAmountParsed, burnAmountParsed)
+          setResult(r)
+          if (onTokenCreated) onTokenCreated(tokenAddress)
+          return
         }
-
-        setStep('mint', S.RUNNING)
-        const mintHash = await walletClient.writeContract({
-          address: tokenAddress, abi: TOKEN_ABI,
-          functionName: 'mint', args: [address, mintAmountParsed],
-        })
-        await waitTx(mintHash)
-        setStep('mint', S.DONE, mintHash)
-
-        setStep('burn', S.RUNNING)
-        const burnHash = await walletClient.writeContract({
-          address: tokenAddress, abi: TOKEN_ABI,
-          functionName: 'burn', args: [burnAmountParsed],
-        })
-        await waitTx(burnHash)
-        setStep('burn', S.DONE, burnHash)
-
-        setResult({ tokenAddress, createHash, mode: 'sequential' })
       }
 
+      // ── SEQUENTIAL MODE ───────────────────────────────────────────────────
+      const r = await runSequential(walletClient, tokenAddress, createHash, mintAmountParsed, burnAmountParsed)
+      setResult(r)
       if (onTokenCreated) onTokenCreated(tokenAddress)
 
     } catch (err) {
@@ -436,12 +475,12 @@ export default function CreateToken({ onTokenCreated }) {
         <div className="mt-5 p-4 bg-gray-50 border border-gray-200 rounded-lg">
           <div className="flex items-center justify-between mb-2">
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-              {form.batchMode ? '⚡ Batch Mode' : '🔢 Sequential'} — {steps.length} steps
+              {activeMode === 'batch' ? '⚡ Batch Mode' : '🔢 Sequential'} — {displaySteps.length} steps
             </p>
             {loading && <Spinner />}
           </div>
           <div className="space-y-0.5">
-            {steps.map(step => (
+            {displaySteps.map(step => (
               <StepRow
                 key={step.id}
                 step={step}
